@@ -145,24 +145,49 @@ function DepotPickContent() {
 
     try {
       const selectedInvoices = invoices.filter((i) => selectedInvoiceIds.has(i.id));
+      const succeededIds: string[] = [];
+      const failures: { invoiceNumber?: string; error: string }[] = [];
 
       for (const inv of selectedInvoices) {
         const itemPicks = (inv.items || []).map((i) => ({ id: i.id, isPicked: true }));
-        await fetch(`/api/invoices/${inv.id}/pick`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ itemPicks }),
-        });
+        try {
+          const res = await fetch(`/api/invoices/${inv.id}/pick`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ itemPicks }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            failures.push({ invoiceNumber: inv.invoiceNumber, error: data.error || 'Failed to pick' });
+            continue;
+          }
+          succeededIds.push(inv.id);
+        } catch (err: any) {
+          failures.push({ invoiceNumber: inv.invoiceNumber, error: err.message || 'Network error' });
+        }
       }
 
-      setInvoices((items) => items.filter((i) => !selectedInvoiceIds.has(i.id)));
-      setSelectedInvoiceIds(new Set());
-
-      toast({
-        title: 'Batch Pick Completed',
-        description: `${selectedInvoices.length} orders picked and forwarded to packing bench.`,
-        variant: 'success',
+      setInvoices((items) => items.filter((i) => !succeededIds.includes(i.id)));
+      setSelectedInvoiceIds((prev) => {
+        const next = new Set(prev);
+        succeededIds.forEach((id) => next.delete(id));
+        return next;
       });
+
+      if (succeededIds.length > 0) {
+        toast({
+          title: 'Batch Pick Completed',
+          description: `${succeededIds.length} order${succeededIds.length === 1 ? '' : 's'} picked and forwarded to packing bench.`,
+          variant: 'success',
+        });
+      }
+      if (failures.length > 0) {
+        toast({
+          title: `${failures.length} order${failures.length === 1 ? '' : 's'} could not be picked`,
+          description: failures.map((f) => `${f.invoiceNumber || 'Order'}: ${f.error}`).join('; '),
+          variant: 'error',
+        });
+      }
     } catch (err: any) {
       toast({
         title: 'Batch Pick Error',

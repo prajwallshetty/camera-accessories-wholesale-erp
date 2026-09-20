@@ -106,14 +106,17 @@ export default function ServiceInvoiceDetailPage() {
         body: JSON.stringify({ status: newStatus }),
       });
 
-      if (res.ok) {
-        toast({
-          title: 'Status Updated',
-          description: `Invoice status changed to ${newStatus}`,
-          variant: 'success',
-        });
-        setInvoice((prev) => (prev ? { ...prev, status: newStatus as any } : null));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update status');
       }
+
+      toast({
+        title: 'Status Updated',
+        description: `Invoice status changed to ${newStatus}`,
+        variant: 'success',
+      });
+      setInvoice((prev) => (prev ? { ...prev, status: newStatus as any } : null));
     } catch (err: any) {
       toast({
         title: 'Update Error',

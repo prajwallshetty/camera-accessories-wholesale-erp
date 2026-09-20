@@ -177,18 +177,14 @@ export default function InvoiceDetailPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setInvoice((prev) => (prev ? { ...prev, ...(data.invoice || data) } : data.invoice || data));
-      } else {
-        await fetch(`/api/invoices/${invoice.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fulfilmentStatus: 'PROCESSING' }),
-        });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to mark items as picked');
       }
-    } catch (e) {
-      console.warn('Pick status update error:', e);
+      setInvoice((prev) => (prev ? { ...prev, ...(data.invoice || data) } : data.invoice || data));
+      toast({ title: 'Items picked', variant: 'success' });
+    } catch (err: any) {
+      toast({ title: err.message || 'Could not mark items as picked', variant: 'error' });
     } finally {
       setIsPicking(false);
       loadData();
@@ -214,24 +210,17 @@ export default function InvoiceDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setInvoice((prev) => (prev ? { ...prev, ...(data.invoice || data) } : data.invoice || data));
-      } else {
-        await fetch(`/api/invoices/${invoice.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fulfilmentStatus: 'PACKED',
-            ...payload,
-          }),
-        });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to record packing details');
       }
-    } catch (e) {
-      console.warn('Pack status update error:', e);
+      setInvoice((prev) => (prev ? { ...prev, ...(data.invoice || data) } : data.invoice || data));
+      toast({ title: 'Packing details saved', variant: 'success' });
+      setIsPackingModalOpen(false);
+    } catch (err: any) {
+      toast({ title: err.message || 'Could not save packing details', variant: 'error' });
     } finally {
       setIsPacking(false);
-      setIsPackingModalOpen(false);
       loadData();
     }
   };
@@ -255,25 +244,18 @@ export default function InvoiceDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.invoice) setInvoice(data.invoice);
-        if (data.shipment) setShipment(data.shipment);
-      } else {
-        await fetch(`/api/invoices/${invoice.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fulfilmentStatus: 'SHIPPED',
-            ...payload,
-          }),
-        });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to record shipment details');
       }
-    } catch (e) {
-      console.warn('Ship status update error:', e);
+      if (data.invoice) setInvoice(data.invoice);
+      if (data.shipment) setShipment(data.shipment);
+      toast({ title: 'Shipment recorded', variant: 'success' });
+      setIsShippingModalOpen(false);
+    } catch (err: any) {
+      toast({ title: err.message || 'Could not record shipment details', variant: 'error' });
     } finally {
       setIsShipping(false);
-      setIsShippingModalOpen(false);
       loadData();
     }
   };

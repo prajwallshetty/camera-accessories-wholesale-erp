@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { guardApi, stripUserSecrets } from '@/lib/api-auth';
 import { parsePagination } from '@/lib/pagination';
@@ -57,6 +57,26 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { password, ...userData } = body;
 
+    const cleanEmail = (userData.email || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      return NextResponse.json({ error: 'Email is required' }, { status: 400 });
+    }
+    userData.email = cleanEmail;
+
+    // Duplicate email check (fall back to the dataStore mirror when Prisma
+    // is unreachable, so this is still caught offline).
+    try {
+      const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
+      if (existing) {
+        return NextResponse.json({ error: `A user with email "${cleanEmail}" already exists` }, { status: 409 });
+      }
+    } catch {
+      const existing = dataStore.getUsers().find((u) => u.email.toLowerCase() === cleanEmail);
+      if (existing) {
+        return NextResponse.json({ error: `A user with email "${cleanEmail}" already exists` }, { status: 409 });
+      }
+    }
+
     let passwordHash = '';
     if (password) {
       const { hashPassword } = await import('@/lib/auth');
@@ -73,7 +93,14 @@ export async function POST(req: NextRequest) {
       });
       dataStore.createUser({ ...user, passwordHash });
       return NextResponse.json(stripUserSecrets(user), { status: 201 });
-    } catch {
+    } catch (dbErr) {
+      if (isPrismaConstraintError(dbErr)) {
+        const message =
+          dbErr.code === 'P2002'
+            ? `A user with email "${cleanEmail}" already exists`
+            : prismaConstraintMessage(dbErr, 'User');
+        return NextResponse.json({ error: message }, { status: 409 });
+      }
       const user = dataStore.createUser({
         ...userData,
         passwordHash,
