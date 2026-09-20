@@ -88,6 +88,33 @@ export const prisma = new Proxy(realPrisma, {
   }
 }) as PrismaClient;
 
+/**
+ * True when `err` is a genuine response FROM the database (a real constraint
+ * violation, missing row, etc.) rather than a connectivity/timeout failure.
+ * Prisma's known request errors always carry a `.code` like "P2003"
+ * (foreign key constraint) or "P2025" (record not found); the offline/
+ * timeout errors thrown by the proxy above are plain Errors with no `.code`.
+ * Callers should surface these to the user instead of silently falling
+ * back to the dataStore mirror — the record was NOT deleted/changed.
+ */
+export function isPrismaConstraintError(err: unknown): err is { code: string; meta?: any } {
+  return Boolean(
+    err &&
+      typeof err === 'object' &&
+      typeof (err as any).code === 'string' &&
+      /^P2\d{3}$/.test((err as any).code)
+  );
+}
+
+/** Friendly message for the common delete-blocking constraint codes. */
+export function prismaConstraintMessage(err: { code: string }, entityLabel: string): string {
+  if (err.code === 'P2025') return `${entityLabel} was already deleted or could not be found.`;
+  if (err.code === 'P2003' || err.code === 'P2014') {
+    return `Cannot delete this ${entityLabel.toLowerCase()} because other records (orders, invoices, or history) still reference it.`;
+  }
+  return `Could not delete this ${entityLabel.toLowerCase()} because of a database constraint.`;
+}
+
 export async function withDbTimeout<T>(
   operation: () => Promise<T>,
   timeoutMs = 1500

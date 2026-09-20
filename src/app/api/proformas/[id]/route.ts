@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { broadcastSystemEvent } from '@/lib/events-emitter';
 import { guardApi } from '@/lib/api-auth';
@@ -276,7 +276,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
         where: { id: existing.id },
       });
     } catch (dbErr) {
-      // DB offline, proceed to fallback
+      if (isPrismaConstraintError(dbErr)) {
+        return NextResponse.json(
+          { error: prismaConstraintMessage(dbErr, 'Proforma') },
+          { status: 409 }
+        );
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore delete.
     }
 
     dataStore.deleteProforma(existing.id);

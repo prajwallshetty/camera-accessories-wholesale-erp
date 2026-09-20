@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { guardApi, sanitizeProductForRole } from '@/lib/api-auth';
 
@@ -114,7 +114,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         });
       });
     } catch (dbErr) {
-      // Fallback to dataStore
+      // A real constraint violation (e.g. barcode already used by another
+      // product) must be surfaced — falling through to the dataStore update
+      // would silently accept an edit Postgres actually rejected, leaving
+      // the two stores inconsistent.
+      if (isPrismaConstraintError(dbErr)) {
+        const message =
+          dbErr.code === 'P2002'
+            ? 'That barcode is already used by another product.'
+            : prismaConstraintMessage(dbErr, 'Product');
+        return NextResponse.json({ error: message }, { status: 409 });
+      }
+
+      // Otherwise the DB is unreachable/offline — proceed to dataStore fallback.
       const current = dataStore.getProductById(id);
       const newTotalStock = depotBreakdown
         ? Object.values(depotBreakdown).reduce((sum: number, q: any) => sum + (parseInt(q) || 0), 0)
@@ -153,7 +165,17 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
         where: { id },
       });
     } catch (dbErr) {
-      // Prisma offline, proceed to fallback
+      // A real constraint violation (e.g. the product is referenced by
+      // existing order/invoice line items) must be surfaced, not silently
+      // swallowed — falling through to the dataStore delete would remove it
+      // from the local cache while it still exists in Postgres.
+      if (isPrismaConstraintError(dbErr)) {
+        return NextResponse.json(
+          { error: prismaConstraintMessage(dbErr, 'Product') },
+          { status: 409 }
+        );
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore delete.
     }
 
     dataStore.deleteProduct(id);

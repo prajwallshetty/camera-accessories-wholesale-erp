@@ -26,13 +26,36 @@ interface CachedOverview {
 const overviewCache = new Map<string, CachedOverview>();
 const OVERVIEW_CACHE_TTL_MS = 30 * 1000;
 
+/** Resolves the "Date range" dashboard filter to a cutoff Date (inclusive from). */
+function resolveRangeStart(range: string | null, now: Date): Date {
+  switch (range) {
+    case 'today':
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    case '7d':
+      return new Date(now.getTime() - 7 * 86400000);
+    case 'quarter': {
+      const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
+      return new Date(now.getFullYear(), quarterStartMonth, 1);
+    }
+    case 'ytd':
+      return new Date(now.getFullYear(), 0, 1);
+    case '30d':
+      return new Date(now.getTime() - 30 * 86400000);
+    default:
+      // No recognized range (or 'all') — do not restrict by date.
+      return new Date(0);
+  }
+}
+
 export async function GET(req: NextRequest) {
   const auth = await guardApi(req, 'dashboard.view');
   if (!auth.ok) return auth.response;
 
+  const range = req.nextUrl.searchParams.get('range');
+
   try {
     const depotId = depotIdFilter(auth.user);
-    const cacheKey = depotId || 'GLOBAL';
+    const cacheKey = `${depotId || 'GLOBAL'}:${range || '30d'}`;
     const currentTime = Date.now();
     const cached = overviewCache.get(cacheKey);
 
@@ -119,15 +142,21 @@ export async function GET(req: NextRequest) {
     const profitChangePct = pctChange(currentBucket.revenue - currentBucket.cost, previousBucket.revenue - previousBucket.cost);
     const ordersChangePct = pctChange(currentBucket.orders, previousBucket.orders);
 
-    // ---- Totals (all-time, non-cancelled) ----
-    const totalRevenue = invoices.reduce((s, i) => s + i.grandTotal, 0);
-    const totalCost = invoices.reduce((s, i) => s + costOfItems(i.items), 0);
+    // ---- Range-scoped invoices for the "Date range" dashboard filter. The
+    // trend chart above intentionally stays a fixed trailing-6-month view
+    // regardless of this filter; everything below reflects the selected range.
+    const rangeStart = resolveRangeStart(range, now);
+    const rangeInvoices = range ? invoices.filter((inv) => new Date(inv.createdAt) >= rangeStart) : invoices;
+
+    // ---- Totals (scoped to the selected date range) ----
+    const totalRevenue = rangeInvoices.reduce((s, i) => s + i.grandTotal, 0);
+    const totalCost = rangeInvoices.reduce((s, i) => s + costOfItems(i.items), 0);
     const totalGrossProfit = totalRevenue - totalCost;
     const grossMarginPercent = totalRevenue ? Math.round((totalGrossProfit / totalRevenue) * 1000) / 10 : 0;
 
     // ---- Sales by category ----
     const categoryTotals = new Map<string, { revenue: number; units: number }>();
-    for (const inv of invoices) {
+    for (const inv of rangeInvoices) {
       for (const item of inv.items) {
         const categoryName = productById.get(item.productId)?.categoryName || 'Uncategorized';
         const entry = categoryTotals.get(categoryName) || { revenue: 0, units: 0 };
@@ -142,7 +171,7 @@ export async function GET(req: NextRequest) {
 
     // ---- Top products ----
     const productTotals = new Map<string, { unitsSold: number; revenue: number; cost: number }>();
-    for (const inv of invoices) {
+    for (const inv of rangeInvoices) {
       for (const item of inv.items) {
         const entry = productTotals.get(item.productId) || { unitsSold: 0, revenue: 0, cost: 0 };
         entry.unitsSold += item.quantity;
@@ -171,7 +200,7 @@ export async function GET(req: NextRequest) {
 
     // ---- Top customers ----
     const customerTotals = new Map<string, { name: string; company: string; orders: number; revenue: number; cost: number }>();
-    for (const inv of invoices) {
+    for (const inv of rangeInvoices) {
       const entry = customerTotals.get(inv.customerId) || { name: inv.customerName, company: inv.customerCompany, orders: 0, revenue: 0, cost: 0 };
       entry.orders += 1;
       entry.revenue += inv.grandTotal;
@@ -205,7 +234,7 @@ export async function GET(req: NextRequest) {
     }> = [];
     if (!isDepotScoped) {
       const invoicesByDepot = new Map<string, { revenue: number; cost: number; orders: number }>();
-      for (const inv of invoices) {
+      for (const inv of rangeInvoices) {
         const entry = invoicesByDepot.get(inv.depotId) || { revenue: 0, cost: 0, orders: 0 };
         entry.revenue += inv.grandTotal;
         entry.cost += costOfItems(inv.items);
@@ -279,10 +308,15 @@ export async function GET(req: NextRequest) {
     console.error('Error building dashboard overview from DB, building from dataStore:', error);
     try {
       const products = dataStore.getProducts();
-      const invoices = dataStore.getInvoices();
+      const allInvoices = dataStore.getInvoices();
       const proformas = dataStore.getProformas();
       const shipments = dataStore.getShipments();
       const depots = dataStore.getDepots();
+
+      const fallbackRangeStart = resolveRangeStart(range, new Date());
+      const invoices = range
+        ? allInvoices.filter((inv) => new Date(inv.createdAt) >= fallbackRangeStart)
+        : allInvoices;
 
       const totalRevenue = invoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
       const totalUnits = products.reduce((sum, p) => sum + (p.totalStock || 0), 0);

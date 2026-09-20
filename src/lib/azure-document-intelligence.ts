@@ -125,7 +125,7 @@ function getFieldValue(fields: Record<string, any> | undefined, fieldName: strin
 /**
  * Parses Azure analyzeResult into normalized ExtractedDocumentData
  */
-function parseAzureAnalyzeResult(analyzeResult: any, fileName?: string): ExtractedDocumentData {
+function parseAzureAnalyzeResult(analyzeResult: any, fileName?: string, isImageSource?: boolean): ExtractedDocumentData {
   const document = analyzeResult?.documents?.[0];
   const fields = document?.fields || {};
 
@@ -255,6 +255,7 @@ function parseAzureAnalyzeResult(analyzeResult: any, fileName?: string): Extract
     ],
     pageCount: analyzeResult?.pages?.length || 1,
     rawConfidence: document?.confidence || 0.95,
+    isScannedOcr: Boolean(isImageSource),
   };
 }
 
@@ -319,9 +320,27 @@ function getFallbackExtraction(fileName?: string): ExtractedDocumentData {
 /**
  * Main Extraction Entrypoint
  */
+const SUPPORTED_AZURE_CONTENT_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/bmp',
+  'image/tiff',
+  'image/heif',
+]);
+
+/** Normalizes an arbitrary file mime type to one Azure Document Intelligence accepts. */
+function resolveAzureContentType(mimeType?: string): string {
+  const normalized = (mimeType || '').toLowerCase().split(';')[0].trim();
+  if (normalized === 'image/jpg') return 'image/jpeg';
+  if (SUPPORTED_AZURE_CONTENT_TYPES.has(normalized)) return normalized;
+  return 'application/pdf';
+}
+
 export async function extractDocumentWithAzure(
   fileBuffer: Buffer | Uint8Array,
-  fileName?: string
+  fileName?: string,
+  mimeType?: string
 ): Promise<ExtractedDocumentData> {
   const { endpoint, key, isConfigured } = getAzureConfig();
 
@@ -332,15 +351,20 @@ export async function extractDocumentWithAzure(
     return getFallbackExtraction(fileName);
   }
 
+  const contentType = resolveAzureContentType(mimeType);
+  // Scanned PDFs are handled by ocrHighResolution below; the flag is invalid for
+  // plain image analysis, so only request it when we're actually sending a PDF.
+  const ocrFeatureQuery = contentType === 'application/pdf' ? '&features=ocrHighResolution' : '';
+
   try {
     // Try latest 2024-11-30 API first, fallback to 2023-07-31
-    const analyzeUrl = `${endpoint}/documentintelligence/documentModels/prebuilt-invoice:analyze?api-version=2024-11-30&features=ocrHighResolution`;
+    const analyzeUrl = `${endpoint}/documentintelligence/documentModels/prebuilt-invoice:analyze?api-version=2024-11-30${ocrFeatureQuery}`;
 
     let postRes = await fetch(analyzeUrl, {
       method: 'POST',
       headers: {
         'Ocp-Apim-Subscription-Key': key,
-        'Content-Type': 'application/pdf',
+        'Content-Type': contentType,
       },
       body: fileBuffer as any,
     });
@@ -352,7 +376,7 @@ export async function extractDocumentWithAzure(
         method: 'POST',
         headers: {
           'Ocp-Apim-Subscription-Key': key,
-          'Content-Type': 'application/pdf',
+          'Content-Type': contentType,
         },
         body: fileBuffer as any,
       });
@@ -369,7 +393,7 @@ export async function extractDocumentWithAzure(
     }
 
     const analyzeResult = await pollOperationResult(operationLocation, key);
-    return parseAzureAnalyzeResult(analyzeResult, fileName);
+    return parseAzureAnalyzeResult(analyzeResult, fileName, contentType !== 'application/pdf');
   } catch (err: any) {
     console.error('[Azure Document Intelligence Extraction Error]:', err.message);
     throw err;

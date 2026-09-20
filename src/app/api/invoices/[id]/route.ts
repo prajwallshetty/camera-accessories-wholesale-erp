@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { assertDepotAccess, guardApi } from '@/lib/api-auth';
 import { hasPermission } from '@/lib/rbac';
@@ -333,7 +333,15 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       await prisma.taxInvoice.delete({
         where: { id: existing.id },
       });
-    } catch (dbErr) {}
+    } catch (dbErr) {
+      if (isPrismaConstraintError(dbErr)) {
+        return NextResponse.json(
+          { error: prismaConstraintMessage(dbErr, 'Invoice') },
+          { status: 409 }
+        );
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore delete.
+    }
 
     dataStore.deleteInvoice(existing.id);
     return NextResponse.json({ success: true });

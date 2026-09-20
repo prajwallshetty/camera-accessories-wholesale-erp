@@ -175,11 +175,14 @@ export async function POST(req: NextRequest) {
 
     const cleanSku = sku.trim().toUpperCase();
 
-    // Check if SKU already exists
+    // Check if SKU already exists (fall back to the dataStore mirror when
+    // Prisma is unreachable, so duplicate SKUs are still caught offline).
     let existingSku: any = null;
     try {
       existingSku = await prisma.product.findUnique({ where: { sku: cleanSku } });
-    } catch {}
+    } catch {
+      existingSku = dataStore.getProducts().find((p) => p.sku?.toUpperCase() === cleanSku) || null;
+    }
     if (existingSku) {
       return NextResponse.json({ error: `Product with SKU "${cleanSku}" already exists` }, { status: 409 });
     }

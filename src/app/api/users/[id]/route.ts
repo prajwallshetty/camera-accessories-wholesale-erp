@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { guardApi, stripUserSecrets } from '@/lib/api-auth';
 
@@ -82,7 +82,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       });
       dataStore.updateUser(id, updateData);
       return NextResponse.json(stripUserSecrets(user));
-    } catch {
+    } catch (dbErr) {
+      // A real constraint violation (e.g. that email is already used by
+      // another account) must be surfaced — falling through to the
+      // dataStore update would silently accept an edit Postgres actually
+      // rejected, leaving the two stores inconsistent.
+      if (isPrismaConstraintError(dbErr)) {
+        const message =
+          dbErr.code === 'P2002'
+            ? 'That email address is already used by another account.'
+            : prismaConstraintMessage(dbErr, 'User');
+        return NextResponse.json({ error: message }, { status: 409 });
+      }
+
       const user = dataStore.updateUser(id, updateData);
       if (!user) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 });
@@ -122,7 +134,20 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       await prisma.user.delete({
         where: { id },
       });
-    } catch {}
+    } catch (dbErr) {
+      // A real constraint violation (e.g. the user is still referenced as
+      // the manager/creator on existing invoices or proformas) must be
+      // surfaced, not silently swallowed — falling through to the
+      // dataStore delete would remove it from the local cache while it
+      // still exists in Postgres.
+      if (isPrismaConstraintError(dbErr)) {
+        return NextResponse.json(
+          { error: prismaConstraintMessage(dbErr, 'User') },
+          { status: 409 }
+        );
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore delete.
+    }
     dataStore.deleteUser(id);
     return NextResponse.json({ success: true });
   } catch (error) {

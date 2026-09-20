@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { guardApi } from '@/lib/api-auth';
 
@@ -135,7 +135,18 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         data: updateData,
       });
     } catch (dbErr) {
-      // Fallback to dataStore
+      // A real constraint violation (e.g. that email/customer code is
+      // already used by another customer) must be surfaced — falling
+      // through to the dataStore update would silently accept an edit
+      // Postgres actually rejected, leaving the two stores inconsistent.
+      if (isPrismaConstraintError(dbErr)) {
+        const message =
+          dbErr.code === 'P2002'
+            ? 'That email or customer code is already used by another customer.'
+            : prismaConstraintMessage(dbErr, 'Customer');
+        return NextResponse.json({ error: message }, { status: 409 });
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore fallback.
       customer = dataStore.updateCustomer(id, updateData);
     }
 
@@ -166,7 +177,17 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
         where: { id },
       });
     } catch (dbErr) {
-      // Prisma offline, proceed to dataStore delete
+      // A real constraint violation (e.g. the customer still has proformas/
+      // invoices on file) must be surfaced, not silently swallowed — falling
+      // through to the dataStore delete here would remove it from the local
+      // cache while it still exists in Postgres, making it reappear later.
+      if (isPrismaConstraintError(dbErr)) {
+        return NextResponse.json(
+          { error: prismaConstraintMessage(dbErr, 'Customer') },
+          { status: 409 }
+        );
+      }
+      // Otherwise the DB is unreachable/offline — proceed to dataStore delete.
     }
 
     dataStore.deleteCustomer(id);

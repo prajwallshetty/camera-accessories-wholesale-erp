@@ -226,25 +226,6 @@ export default function ProductsPage() {
     }
   };
 
-  const confirmDelete = async () => {
-    if (!deletingProduct) return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`/api/products/${deletingProduct.id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || 'Failed to delete product');
-      }
-      toast({ title: 'Product deleted', variant: 'success' });
-      setDeletingProduct(null);
-      await loadData(debouncedSearch);
-    } catch (err: any) {
-      toast({ title: err.message || 'Failed to delete product', variant: 'error' });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   const handleDelete = async () => {
     if (!deletingProduct) return;
     setIsDeleting(true);

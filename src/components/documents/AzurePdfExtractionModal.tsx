@@ -77,12 +77,17 @@ export default function AzurePdfExtractionModal({
     }
   }, [pendingReviewExtraction, clearPendingReview]);
 
+  const isAcceptedFile = (f: File) =>
+    f.type.includes('pdf') ||
+    f.type.startsWith('image/') ||
+    /\.(pdf|jpe?g|png|bmp|tiff?|heif)$/i.test(f.name);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
-    if (!selectedFile.type.includes('pdf') && !selectedFile.name.toLowerCase().endsWith('.pdf')) {
-      setErrorMessage('Please select a valid PDF document (standard or scanned OCR).');
+    if (!isAcceptedFile(selectedFile)) {
+      setErrorMessage('Please select a valid PDF, JPG, PNG, BMP, or TIFF document.');
       return;
     }
 
@@ -103,8 +108,8 @@ export default function AzurePdfExtractionModal({
     const droppedFile = e.dataTransfer.files?.[0];
     if (!droppedFile) return;
 
-    if (!droppedFile.type.includes('pdf') && !droppedFile.name.toLowerCase().endsWith('.pdf')) {
-      setErrorMessage('Please drop a valid PDF file.');
+    if (!isAcceptedFile(droppedFile)) {
+      setErrorMessage('Please drop a valid PDF, JPG, PNG, BMP, or TIFF file.');
       return;
     }
 
@@ -361,7 +366,7 @@ export default function AzurePdfExtractionModal({
       onClose={onClose}
       size="3xl"
       title="Azure AI Document Intelligence"
-      description="Extract commercial invoice and quotation data from standard or scanned OCR PDFs with review & confirmation."
+      description="Extract commercial invoice and quotation data from digital PDFs, scanned OCR PDFs, or photographed documents (JPG/PNG) with review & confirmation."
     >
       <div className="flex flex-col gap-5">
         {/* Step indicator */}
@@ -440,7 +445,7 @@ export default function AzurePdfExtractionModal({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="application/pdf"
+                accept="application/pdf,image/jpeg,image/png,image/bmp,image/tiff,image/heif,.pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff,.heif"
                 className="hidden"
                 onChange={handleFileChange}
               />
@@ -451,10 +456,11 @@ export default function AzurePdfExtractionModal({
 
               <div>
                 <p className="text-sm font-semibold text-ink">
-                  {file ? file.name : 'Click to select or drag & drop PDF document'}
+                  {file ? file.name : 'Click to select or drag & drop a PDF or image document'}
                 </p>
                 <p className="text-xs text-muted mt-1">
-                  Supports standard digital PDFs and high-resolution scanned invoices / OCR documents.
+                  Supports standard digital PDFs, high-resolution scanned/OCR PDFs, and photographed
+                  documents (JPG, PNG, BMP, TIFF).
                 </p>
               </div>
 

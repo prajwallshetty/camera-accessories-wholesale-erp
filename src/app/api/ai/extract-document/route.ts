@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     let fileName = 'Uploaded_Document.pdf';
     let fileDataUri: string = '';
     let category = 'PROFORMA';
+    let mimeType = 'application/pdf';
 
     const contentType = req.headers.get('content-type') || '';
 
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
       const arrayBuffer = await file.arrayBuffer();
       fileBuffer = Buffer.from(arrayBuffer);
       const base64String = fileBuffer.toString('base64');
-      const mimeType = file.type || 'application/pdf';
+      mimeType = file.type || 'application/pdf';
       fileDataUri = `data:${mimeType};base64,${base64String}`;
     } else {
       const body = await req.json();
@@ -50,6 +51,7 @@ export async function POST(req: NextRequest) {
       // Extract raw base64 data if it is a data URI
       const base64Match = fileData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
       if (base64Match) {
+        mimeType = base64Match[1];
         fileBuffer = Buffer.from(base64Match[2], 'base64');
       } else {
         fileBuffer = Buffer.from(fileData, 'base64');
@@ -75,8 +77,8 @@ export async function POST(req: NextRequest) {
 
     // 2. Register in Centralized Documents Repository
     const format = uploadRes?.format || fileName.split('.').pop() || 'pdf';
-    const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(format.toLowerCase());
-    const fileType = isImage ? `image/${format}` : 'application/pdf';
+    const isImage = mimeType.startsWith('image/');
+    const fileType = mimeType;
 
     const docData = {
       title: `AI Extracted: ${fileName.replace(/\.[^/.]+$/, '')}`,
@@ -108,8 +110,8 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Run Azure Document Intelligence extraction
-    console.log(`[AI Extraction] Processing "${fileName}" (${fileBuffer.length} bytes) via Azure AI...`);
-    const extractedData = await extractDocumentWithAzure(fileBuffer, fileName);
+    console.log(`[AI Extraction] Processing "${fileName}" (${fileBuffer.length} bytes, ${mimeType}) via Azure AI...`);
+    const extractedData = await extractDocumentWithAzure(fileBuffer, fileName, mimeType);
 
     return NextResponse.json({
       success: true,

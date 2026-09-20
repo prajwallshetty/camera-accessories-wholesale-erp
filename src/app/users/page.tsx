@@ -202,25 +202,6 @@ export default function UsersManagementPage() {
     }
   };
 
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`/api/users/${deleteTarget.id}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to delete user');
-      }
-      toast({ title: 'User account deleted', variant: 'success' });
-      setDeleteTarget(null);
-      await loadData(debouncedSearch);
-    } catch (err: any) {
-      toast({ title: err.message || 'Delete failed', variant: 'error' });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetTarget) return;
@@ -249,7 +230,8 @@ export default function UsersManagementPage() {
     setIsDeleting(true);
     try {
       const res = await fetch(`/api/users/${deleteTarget.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete user');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
       toast({ title: `${deleteTarget.name} removed`, variant: 'success' });
       setDeleteTarget(null);
       await loadData();
