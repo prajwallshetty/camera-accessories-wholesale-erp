@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { guardApi, assertDepotAccess } from '@/lib/api-auth';
 import { parsePagination } from '@/lib/pagination';
@@ -99,10 +99,26 @@ export async function POST(req: NextRequest) {
         });
 
         return NextResponse.json({ success: true, adjustment }, { status: 201 });
-      } catch {}
+      } catch (dbErr) {
+        // `inventory` was just read successfully via Prisma, so the DB is
+        // reachable — a transaction failure here is a real error (e.g. a
+        // constraint violation), not "offline." Falling through to the
+        // dataStore-only path below would record the adjustment locally
+        // while Postgres was never actually updated, desyncing the two
+        // stores. Surface it instead.
+        if (isPrismaConstraintError(dbErr)) {
+          return NextResponse.json(
+            { error: prismaConstraintMessage(dbErr, 'Stock adjustment') },
+            { status: 409 }
+          );
+        }
+        console.error('Stock adjustment transaction failed:', dbErr);
+        return NextResponse.json({ error: 'Failed to apply stock adjustment' }, { status: 500 });
+      }
     }
 
-    // Fallback to dataStore
+    // Fallback to dataStore (only reached when the initial Prisma read of
+    // depotInventory itself failed, i.e. the DB is genuinely unreachable)
     const product = dataStore.getProductById(productId);
     if (!product) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 });

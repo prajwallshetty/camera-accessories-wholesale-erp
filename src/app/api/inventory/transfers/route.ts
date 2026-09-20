@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, isPrismaConstraintError, prismaConstraintMessage } from '@/lib/prisma';
 import dataStore from '@/lib/data-store';
 import { assertDepotAccess, depotIdFilter, guardApi } from '@/lib/api-auth';
 import { parsePagination } from '@/lib/pagination';
@@ -61,94 +61,118 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Depot not found' }, { status: 404 });
     }
 
+    let prismaAttempted = false;
     try {
-      // Generate transfer number
-      const lastTransfer = await prisma.stockTransfer.findFirst({
-        orderBy: { createdAt: 'desc' },
-      });
-      const lastNumber = lastTransfer ? parseInt(lastTransfer.transferNumber.split('-')[2]) : 0;
-      const transferNumber = `TR-2026-${String(lastNumber + 1).padStart(5, '0')}`;
-
-      const transfer = await prisma.stockTransfer.create({
-        data: {
-          transferNumber,
-          sourceDepotId,
-          sourceDepotName: sourceDepot.name,
-          destinationDepotId,
-          destinationDepotName: destDepot.name,
-          status: 'PENDING',
-          notes,
-          createdBy: auth.user.name || 'System',
-        },
-      });
-
-      for (const item of items) {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
+      // Everything below runs in a single transaction: if any item fails
+      // (bad product, insufficient stock, a constraint violation), the
+      // whole transfer — including the header row and any inventory
+      // already moved for earlier items — rolls back atomically. Without
+      // this, a mid-loop failure used to leave a half-written transfer in
+      // Postgres and then create a second, different record in dataStore.
+      prismaAttempted = true;
+      const transfer = await prisma.$transaction(async (tx) => {
+        // Generate transfer number
+        const lastTransfer = await tx.stockTransfer.findFirst({
+          orderBy: { createdAt: 'desc' },
         });
+        const lastNumber = lastTransfer ? parseInt(lastTransfer.transferNumber.split('-')[2]) : 0;
+        const transferNumber = `TR-2026-${String(lastNumber + 1).padStart(5, '0')}`;
 
-        if (!product) throw new Error(`Product ${item.productId} not found`);
-
-        await prisma.stockTransferItem.create({
+        const created = await tx.stockTransfer.create({
           data: {
-            transferId: transfer.id,
-            productId: item.productId,
-            productSku: product.sku,
-            productName: product.name,
-            quantity: item.quantity,
-            serialNumbers: item.serialNumbers || [],
+            transferNumber,
+            sourceDepotId,
+            sourceDepotName: sourceDepot.name,
+            destinationDepotId,
+            destinationDepotName: destDepot.name,
+            status: 'PENDING',
+            notes,
+            createdBy: auth.user.name || 'System',
           },
         });
 
-        if (item.serialNumbers && Array.isArray(item.serialNumbers) && item.serialNumbers.length > 0) {
-          await prisma.serialNumber.updateMany({
-            where: {
-              productId: item.productId,
-              serialNumber: { in: item.serialNumbers },
-            },
+        for (const item of items) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+          });
+
+          if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          const quantity = Number(item.quantity) || 0;
+          if (quantity <= 0) throw new Error(`Invalid quantity for ${product.name}`);
+
+          const sourceInventory = await tx.depotInventory.findUnique({
+            where: { productId_depotId: { productId: item.productId, depotId: sourceDepotId } },
+          });
+          if (!sourceInventory || sourceInventory.availableQuantity < quantity) {
+            throw new Error(
+              `Insufficient stock of ${product.name} at ${sourceDepot.name} (available: ${sourceInventory?.availableQuantity ?? 0})`
+            );
+          }
+
+          await tx.stockTransferItem.create({
             data: {
+              transferId: created.id,
+              productId: item.productId,
+              productSku: product.sku,
+              productName: product.name,
+              quantity,
+              serialNumbers: item.serialNumbers || [],
+            },
+          });
+
+          if (item.serialNumbers && Array.isArray(item.serialNumbers) && item.serialNumbers.length > 0) {
+            await tx.serialNumber.updateMany({
+              where: {
+                productId: item.productId,
+                serialNumber: { in: item.serialNumbers },
+              },
+              data: {
+                depotId: destinationDepotId,
+                depotName: destDepot.name,
+              },
+            });
+          }
+
+          await tx.depotInventory.update({
+            where: { id: sourceInventory.id },
+            data: {
+              quantity: { decrement: quantity },
+              availableQuantity: { decrement: quantity },
+            },
+          });
+
+          await tx.depotInventory.upsert({
+            where: {
+              productId_depotId: {
+                productId: item.productId,
+                depotId: destinationDepotId,
+              },
+            },
+            update: {
+              quantity: { increment: quantity },
+              availableQuantity: { increment: quantity },
+            },
+            create: {
+              productId: item.productId,
               depotId: destinationDepotId,
-              depotName: destDepot.name,
+              quantity,
+              allocatedQuantity: 0,
+              availableQuantity: quantity,
+              minStockLevel: 10,
             },
           });
         }
 
-        await prisma.depotInventory.updateMany({
-          where: {
-            productId: item.productId,
-            depotId: sourceDepotId,
-          },
-          data: {
-            quantity: { decrement: item.quantity },
-            availableQuantity: { decrement: item.quantity },
-          },
+        return tx.stockTransfer.findUnique({
+          where: { id: created.id },
+          include: { items: true },
         });
-
-        await prisma.depotInventory.upsert({
-          where: {
-            productId_depotId: {
-              productId: item.productId,
-              depotId: destinationDepotId,
-            },
-          },
-          update: {
-            quantity: { increment: item.quantity },
-            availableQuantity: { increment: item.quantity },
-          },
-          create: {
-            productId: item.productId,
-            depotId: destinationDepotId,
-            quantity: item.quantity,
-            allocatedQuantity: 0,
-            availableQuantity: item.quantity,
-            minStockLevel: 10,
-          },
-        });
-      }
+      });
 
       dataStore.createTransfer({
-        id: transfer.id,
-        transferNumber,
+        id: transfer!.id,
+        transferNumber: transfer!.transferNumber,
         sourceDepotId,
         sourceDepotName: sourceDepot.name,
         destinationDepotId,
@@ -158,14 +182,27 @@ export async function POST(req: NextRequest) {
         createdBy: auth.user.name || 'System',
       });
 
-      const completeTransfer = await prisma.stockTransfer.findUnique({
-        where: { id: transfer.id },
-        include: { items: true },
-      });
-
-      return NextResponse.json(completeTransfer, { status: 201 });
+      return NextResponse.json(transfer, { status: 201 });
     } catch (dbErr) {
-      // Direct DataStore fallback
+      // A real business-rule or constraint failure (bad product, insufficient
+      // stock, a unique-field conflict) must be surfaced — the transaction
+      // above already rolled back cleanly, so falling through to a
+      // dataStore-only record here would silently create a transfer that
+      // never happened in Postgres.
+      if (prismaAttempted && (isPrismaConstraintError(dbErr) || dbErr instanceof Error)) {
+        const message = isPrismaConstraintError(dbErr)
+          ? prismaConstraintMessage(dbErr, 'Stock transfer')
+          : (dbErr as Error).message;
+        // Genuine DB-offline errors from the circuit breaker are plain
+        // Errors with no distinguishing code — but so are the explicit
+        // business-rule throws above. Treat known business-rule phrasing
+        // as a real rejection; anything else falls back to dataStore.
+        if (/not found|Insufficient stock|Invalid quantity/i.test(message)) {
+          return NextResponse.json({ error: message }, { status: 400 });
+        }
+      }
+
+      // Direct DataStore fallback (DB genuinely unreachable)
       const formattedItems = (items || []).map((item: any) => {
         const product = dataStore.getProductById(item.productId);
         return {
