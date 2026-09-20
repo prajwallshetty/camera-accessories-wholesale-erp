@@ -109,12 +109,14 @@ export default function ProformasPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'CONFIRMED' }),
       });
-      if (res.ok) {
-        toast({ title: 'Proforma approved', variant: 'success' });
-        loadData(true);
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || 'Failed to approve proforma');
       }
-    } catch (err) {
-      console.error('Approve error:', err);
+      toast({ title: 'Proforma approved', variant: 'success' });
+      loadData(true);
+    } catch (err: any) {
+      toast({ title: err.message || 'Could not approve proforma', variant: 'error' });
     } finally {
       setApprovingId(null);
     }
